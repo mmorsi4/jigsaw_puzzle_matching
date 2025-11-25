@@ -410,7 +410,7 @@ if __name__ == "__main__":
     parser.add_argument("--correct-folder", type=str, default="gravity_falls_dataset/correct", help="Folder containing correct images.")
     parser.add_argument("--file", type=str, default=None, help="Specific image filename to use (optional).")
     parser.add_argument("--grids", type=str, default="2,4,8", help="Comma-separated grid sizes to attempt, e.g. '2,4,8'.")
-    parser.add_argument("--strip", type=int, default=2, help="Border strip width in pixels (default 16).")
+    parser.add_argument("--strip", type=int, default=1, help="Border strip width in pixels (default 16).")
     parser.add_argument("--topk", type=int, default=12, help="Top-k candidates per slot for backtracking (pruning).")
     parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds). Increase for harder puzzles.)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
