@@ -63,7 +63,12 @@ def extract_borders(piece, strip_width=16):
     Each strip is shaped (strip_width, width) or (height, strip_width) depending on side.
     """
     # Preprocess piece
-    p = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
+    piece_gray = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    img_clahe = clahe.apply(piece_gray)
+    smmothed = cv2.bilateralFilter(img_clahe, 3, 75, 75)
+    edges = cv2.Canny(smmothed, 40, 180)
+    p = piece_gray
     h, w = p.shape
     sw = min(strip_width, h//2, w//2)
     top = p[0:sw, :].astype(np.float32)
@@ -330,12 +335,20 @@ def solve_image(img, grid_n, strip_width=16, top_k=12, time_limit=30.0, visualiz
         show_images([img, recon], titles=["Original", f"Reconstructed {grid_n}x{grid_n}"], figsize=(14,6))
     return order, recon, compat
 
+def compute_error(img1, img2):
+    """Compute the mean squared error between two images."""
+    if img1.shape != img2.shape:
+        raise ValueError("Images must have the same dimensions to compute error.")
+    return np.mean((img1.astype(np.float32) - img2.astype(np.float32)) ** 2)
+
 # ----------------------------
 # Main CLI (updated for multiple images)
 # ----------------------------
-def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None):
+def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None):
     files = []
-
+    false_images = []
+    correct = 0
+    total = 0
     if filename:
         # Single image mode
         path = filename if os.path.isabs(filename) else os.path.join(folder, filename)
@@ -365,14 +378,39 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
             order, recon, compat = solve_image(
                 img, g, strip_width=strip_width, top_k=top_k, time_limit=time_limit, visualize=visualize
             )
+            total+=1
+            if correct_folder:
+                base_name = os.path.splitext(img_name)[0]
+                found = False
+                for ext in ['.png', '.jpg', '.jpeg']:
+                    correct_path = os.path.join(correct_folder, base_name + ext)
+                    if os.path.exists(correct_path):
+                        correct_img = cv2.imread(correct_path)
+                        if correct_img is not None:
+                            error = compute_error(recon, correct_img)
+                            if error<200:
+                                correct+=1
+                            else:
+                                false_images.append(base_name)
+                            print(f"[+] Reconstruction error (MSE) for {g}x{g}: {error:.4f}")
+                        else:
+                            print(f"[-] Could not read correct image {correct_path}")
+                        found = True
+                        break
+                if not found:
+                    print(f"[-] Correct image not found for {img_name} in {correct_folder}")
             print(f"[+] Finished grid {g}x{g} in {round(time.time()-start,2)}s")
+            
+    print(f"Correct images = {correct}/{total}")
+    print(f"Uncorrect image: {false_images}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Edge-based puzzle solver (accurate for 2x2, practical for 4x4 & 8x8).")
-    parser.add_argument("--folder", type=str, default=".", help="Folder containing images (if --file not set uses first).")
+    parser.add_argument("--folder", type=str, default="gravity_falls_dataset/puzzle_2x2", help="Folder containing images (if --file not set uses first).")
+    parser.add_argument("--correct-folder", type=str, default="gravity_falls_dataset/correct", help="Folder containing correct images.")
     parser.add_argument("--file", type=str, default=None, help="Specific image filename to use (optional).")
     parser.add_argument("--grids", type=str, default="2,4,8", help="Comma-separated grid sizes to attempt, e.g. '2,4,8'.")
-    parser.add_argument("--strip", type=int, default=16, help="Border strip width in pixels (default 16).")
+    parser.add_argument("--strip", type=int, default=2, help="Border strip width in pixels (default 16).")
     parser.add_argument("--topk", type=int, default=12, help="Top-k candidates per slot for backtracking (pruning).")
     parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds). Increase for harder puzzles.)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
@@ -383,4 +421,4 @@ if __name__ == "__main__":
     main(args.folder, args.file, grids,
         strip_width=args.strip, top_k=args.topk,
         time_limit=args.timelimit, visualize=not args.no_vis,
-        limit=args.limit)
+        limit=args.limit, correct_folder=args.correct_folder)
