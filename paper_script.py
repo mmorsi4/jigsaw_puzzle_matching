@@ -144,6 +144,53 @@ def gradient_strip(s):
     return grad
 
 # ----------------------------
+# 3) Border similarity metric (2D version)
+# ----------------------------
+def normalize_strip_2d(s):
+    """Zero-mean, unit-norm per channel, keep 2D shape (H,W,3)."""
+    arr = s.astype(np.float32)
+    mean = arr.mean(axis=(0,1), keepdims=True)
+    std = arr.std(axis=(0,1), keepdims=True)
+    std[std < 1e-6] = 1.0
+    arr = (arr - mean) / std
+    return arr
+
+
+def border_distance_2d(stripA, stripB, sideA, sideB):
+    """
+    Distance between two border strips, keeping 2D structure.
+    Handles horizontal and vertical orientation correctly.
+    """
+    def orient(strip, side):
+        s = strip
+        if side in (1, 3):  # right or left -> transpose to match top/bottom orientation
+            s = np.transpose(s, (1, 0, 2))
+        return normalize_strip_2d(s)
+
+    a = orient(stripA, sideA)
+    b = orient(stripB, sideB)
+
+    if a.size == 0 or b.size == 0:
+        return 1e6
+
+    # resize shorter to match longer in the primary axis
+    ha, wa, _ = a.shape
+    hb, wb, _ = b.shape
+    if ha != hb or wa != wb:
+        # resize stripB to match stripA
+        b = cv2.resize(b, (wa, ha), interpolation=cv2.INTER_LINEAR)
+
+    # raw SSD in 2D
+    p = 0.3
+    q = 1/16
+    exp = q / p
+
+    d1 = np.power(np.sum(np.power(np.abs(a - b), p)), exp)
+    d2 = np.power(np.sum(np.power(np.abs(a - b[::-1, :, :]), p)), exp)  # mirrored along main axis
+    return min(d1, d2)
+
+
+# ----------------------------
 # 4) Precompute compatibility matrices
 # ----------------------------
 def build_compatibility(pieces, strip_width=16):
@@ -163,13 +210,13 @@ def build_compatibility(pieces, strip_width=16):
             if i == j:
                 continue
             # top of i vs bottom of j (i above j): i.top vs j.bottom
-            compat[0][i,j] = border_distance(borders[i][0], borders[j][2], 0, 2)
+            compat[0][i,j] = border_distance_2d(borders[i][0], borders[j][2], 0, 2)
             # right of i vs left of j (i left of j)
-            compat[1][i,j] = border_distance(borders[i][1], borders[j][3], 1, 3)
+            compat[1][i,j] = border_distance_2d(borders[i][1], borders[j][3], 1, 3)
             # bottom of i vs top of j (i below j)
-            compat[2][i,j] = border_distance(borders[i][2], borders[j][0], 2, 0)
+            compat[2][i,j] = border_distance_2d(borders[i][2], borders[j][0], 2, 0)
             # left of i vs right of j (i right of j)
-            compat[3][i,j] = border_distance(borders[i][3], borders[j][1], 3, 1)
+            compat[3][i,j] = border_distance_2d(borders[i][3], borders[j][1], 3, 1)
     return compat
 
 # ----------------------------
