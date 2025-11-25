@@ -93,43 +93,35 @@ def normalize_strip(s):
         return (arr - mean)
     return (arr - mean) / std
 
+def normalize_strip_2d(s):
+    arr = s.astype(np.float32)
+    mean = arr.mean()
+    std = arr.std()
+    if std < 1e-6:
+        std = 1.0
+    return (arr - mean) / std
+
 def border_distance(stripA, stripB, sideA, sideB):
-    """
-    Distance between two border strips (lower = more likely match).
-    sideA & sideB tell orientation so we flip/transpose as needed.
-    We'll compare A's edge to B's opposite edge orientation:
-    - top vs bottom: compare rows as-is
-    - right vs left: compare columns; we transpose so both flatten same order
-    For robustness we also compute mirrored version and take minimum (handles slight flips).
-    """
-    # Convert to normalized 1D arrays with consistent orientation.
-    # For horizontal strips (top/bottom), shape = (sw, width) -> keep as-is
-    # For vertical strips (left/right), shape = (height, sw) -> transpose to (sw, height) for comparable flattening
-    def orient(strip, side):
-        s = strip.copy()
-        if side in (1, 3):  # right or left: transpose to become (cols, rows)
+    p = 0.3
+    q = 1/16
+    exp = q / p
+
+    def orient(s, side):
+        s = s.astype(np.float32)
+        if side in (1, 3):  # right or left, transpose to horizontal
             s = s.T
-        return normalize_strip(s)
+        return normalize_strip_2d(s)
 
     a = orient(stripA, sideA)
     b = orient(stripB, sideB)
 
-    if a.size == 0 or b.size == 0:
-        return 1e6
-    # resize shorter to match longer for fair comparison
-    if a.size != b.size:
-        # simple interpolation resize in 1D via numpy (reshape by length)
-        la = a.size; lb = b.size
-        if la < lb:
-            a = np.interp(np.linspace(0, la-1, lb), np.arange(la), a)
-        else:
-            b = np.interp(np.linspace(0, lb-1, la), np.arange(lb), b)
+    if a.shape != b.shape:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]))
 
-    # raw SSD
-    ssd = np.mean((a - b)**2)
-    # also compare with flipped version for safety (some seams are reversed)
-    ssd_flip = np.mean((a - b[::-1])**2)
-    return min(ssd, ssd_flip)
+    d1 = np.power(np.sum(np.power(np.abs(a - b), p)), exp)
+    d2 = np.power(np.sum(np.power(np.abs(a - b[::-1]), p)), exp)  # flip vertically
+
+    return min(d1, d2)
 
 def gradient_strip(s):
     gx = cv2.Sobel(s, cv2.CV_32F, 1, 0, ksize=3)
