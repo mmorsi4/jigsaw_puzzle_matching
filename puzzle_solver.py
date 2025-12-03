@@ -47,7 +47,7 @@ def cut_into_grid(img: np.ndarray, grid_n: int) -> Tuple[List[np.ndarray], List[
 # ----------------------------
 # 2) Extract borders with LAB + gradient
 # ----------------------------
-def extract_borders(piece: np.ndarray, strip_width: int = 16) -> Dict[int, np.ndarray]:
+def extract_borders(piece: np.ndarray, strip_width: int = 1) -> Dict[int, np.ndarray]:
     lab = cv2.cvtColor(piece, cv2.COLOR_BGR2LAB).astype(np.float32)
     h, w = lab.shape[:2]
     sw = min(strip_width, h//2, w//2)
@@ -56,8 +56,8 @@ def extract_borders(piece: np.ndarray, strip_width: int = 16) -> Dict[int, np.nd
         patch_bgr = cv2.cvtColor(patch_lab.astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32)
         patch_gray = cv2.cvtColor(patch_bgr.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
         patch_gray = cv2.GaussianBlur(patch_gray, (3,3), 0)
-
-        gx = cv2.Sobel(patch_gray, cv2.CV_32F, 1, 0, ksize=3)
+        
+        gx = cv2.Sobel(patch_gray, cv2.CV_32F, 1, 0, ksize=3) 
         gy = cv2.Sobel(patch_gray, cv2.CV_32F, 0, 1, ksize=3)
 
         grad_mag = cv2.magnitude(gx, gy)[..., None]
@@ -68,7 +68,7 @@ def extract_borders(piece: np.ndarray, strip_width: int = 16) -> Dict[int, np.nd
         return np.concatenate([patch_lab, grad_mag, grad_dir, lap], axis=2)
 
     return {
-        0: make_grad_patch_enhanced(lab[0:sw, :, :]),       # top
+        0: make_grad_patch_enhanced(lab[0:sw, :, :]),       # top (height, width, channels)
         1: make_grad_patch_enhanced(lab[:, w-sw:w, :]),     # right
         2: make_grad_patch_enhanced(lab[h-sw:h, :, :]),     # bottom
         3: make_grad_patch_enhanced(lab[:, 0:sw, :])        # left
@@ -112,13 +112,13 @@ def border_distance_2d(stripA, stripB, sideA, sideB, p=0.3, q=1/16,
         d_lap = np.sum(np.abs(x[...,5:8] - y[...,5:8])**p)
         total = (w_color*d_color + w_grad_mag*d_grad_mag + w_grad_dir*d_grad_dir +
                  + w_lap*d_lap)
-        return total**q
+        return total**(q/p)
 
     # compute distance and mirrored distance
     d1 = dist(a, b)
-    d2 = dist(a, mirror_for_side(b, sideB))
-    return float(min(d1, d2))
-
+    # d2 = dist(a, mirror_for_side(b, sideB)) in case pieces rotated 180 degress or direction aren't direct 
+    # d = min(d1, d2) 
+    return float(d1)
 
 
 
@@ -127,6 +127,7 @@ def border_distance_2d(stripA, stripB, sideA, sideB, p=0.3, q=1/16,
 # ----------------------------
 def build_compatibility(pieces: List[np.ndarray], strip_width=8) -> Dict[int, np.ndarray]:
     n = len(pieces)
+    
     borders = [extract_borders(p, strip_width) for p in pieces]
     compat = {s: np.full((n,n), 1e9, dtype=np.float32) for s in range(4)}
     
@@ -525,10 +526,12 @@ def solve_image(img, grid_n, strip_width=8, top_k=12, time_limit=30.0, visualize
             bb0 = compute_best_buddies_score(init_placement, grid_n, compat)
 
             # --- visualize placer ---
+            """
             if visualize:
                 visualize_placement(pieces, init_placement, grid_n, (ph,pw), title=f"Seed {s+1}: After Placer")
-
+            """
             # --- visualize segments ---
+            """
             if visualize:
                 segments = segmenter(init_placement, grid_n, compat)
                 seg_img = np.zeros_like(img)
@@ -540,14 +543,16 @@ def solve_image(img, grid_n, strip_width=8, top_k=12, time_limit=30.0, visualize
                         y0, y1, x0, x1 = coords[r*grid_n + c]
                         seg_img[y0:y1, x0:x1] = color
                 show_images([seg_img], titles=[f"Seed {s+1}: Segments"], figsize=(6,6))
+            """
 
             # run shifter (iteratively improve)
             placement_after_shifter, bb_sh = shifter(init_placement, grid_n, compat, max_iters=shifter_iters)
 
             # --- visualize after shifter ---
+            """
             if visualize:
                 visualize_placement(pieces, placement_after_shifter, grid_n, (ph,pw), title=f"Seed {s+1}: After Shifter")
-
+            """
             # take whichever is better
             if bb_sh >= bb0:
                 final_placement = placement_after_shifter

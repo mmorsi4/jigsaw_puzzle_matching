@@ -56,7 +56,7 @@ def cut_into_grid(img, grid_n):
 # ----------------------------
 # 2) Extract border strips
 # ----------------------------
-def extract_borders(piece, strip_width=16):
+def extract_borders(piece, strip_width=16, visualize=True):
     """
     Extracts border strips as grayscale arrays:
     returns dict: {0: top, 1: right, 2: bottom, 3: left}
@@ -68,6 +68,17 @@ def extract_borders(piece, strip_width=16):
     img_clahe = clahe.apply(piece_gray)
     smmothed = cv2.bilateralFilter(img_clahe, 3, 75, 75)
     edges = cv2.Canny(smmothed, 40, 180)
+    
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Largest contour mask
+    contour_mask = np.zeros_like(edges, dtype=np.uint8)
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        cv2.drawContours(contour_mask, [largest], -1, 255, thickness=-1)
+    
+    if visualize:
+        show_images([piece, piece_gray, img_clahe, smmothed, edges, contour_mask], ["original","gray", "clahe", "smoothed", "canny edges", "contour_mask"], grayscale=[False, True, True, True, True, True])
     p = piece_gray
     h, w = p.shape
     sw = min(strip_width, h//2, w//2)
@@ -140,7 +151,7 @@ def gradient_strip(s):
 # ----------------------------
 # 4) Precompute compatibility matrices
 # ----------------------------
-def build_compatibility(pieces, strip_width=16):
+def build_compatibility(pieces, strip_width=16, visualize=True):
     """
     For N pieces return compat[side][i][j] = distance of
     piece i side vs piece j opposite side.
@@ -150,20 +161,20 @@ def build_compatibility(pieces, strip_width=16):
     Lower distance -> better match.
     """
     n = len(pieces)
-    borders = [extract_borders(p, strip_width) for p in pieces]
+    borders = [extract_borders(p, strip_width, visualize) for p in pieces]
     compat = {s: np.full((n,n), 1e6, dtype=np.float32) for s in range(4)}
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
             # top of i vs bottom of j (i above j): i.top vs j.bottom
-            compat[0][i,j] = border_distance(gradient_strip(borders[i][0]), gradient_strip(borders[j][2]), 0, 2)
+            compat[0][i,j] = border_distance(borders[i][0], borders[j][2], 0, 2)
             # right of i vs left of j (i left of j)
-            compat[1][i,j] = border_distance( gradient_strip(borders[i][1]),  gradient_strip(borders[j][3]), 1, 3)
+            compat[1][i,j] = border_distance(borders[i][1], borders[j][3], 1, 3)
             # bottom of i vs top of j (i below j)
-            compat[2][i,j] = border_distance( gradient_strip(borders[i][2]),  gradient_strip(borders[j][0]), 2, 0)
+            compat[2][i,j] = border_distance(borders[i][2], borders[j][0], 2, 0)
             # left of i vs right of j (i right of j)
-            compat[3][i,j] = border_distance( gradient_strip(borders[i][3]),  gradient_strip(borders[j][1]), 3, 1)
+            compat[3][i,j] = border_distance(borders[i][3], borders[j][1], 3, 1)
     return compat
 
 # ----------------------------
@@ -311,7 +322,7 @@ def solve_image(img, grid_n, strip_width=16, top_k=12, time_limit=30.0, visualiz
     n = len(pieces)
     print(f"[+] Grid {grid_n}x{grid_n} -> {n} pieces, piece size {ph}x{pw}")
 
-    compat = build_compatibility(pieces, strip_width=strip_width)
+    compat = build_compatibility(pieces, strip_width=strip_width, visualize=visualize)
     print("[+] Built compatibility matrices (border distances).")
 
     if grid_n == 2:
@@ -410,7 +421,7 @@ if __name__ == "__main__":
     parser.add_argument("--correct-folder", type=str, default="gravity_falls_dataset/correct", help="Folder containing correct images.")
     parser.add_argument("--file", type=str, default=None, help="Specific image filename to use (optional).")
     parser.add_argument("--grids", type=str, default="2,4,8", help="Comma-separated grid sizes to attempt, e.g. '2,4,8'.")
-    parser.add_argument("--strip", type=int, default=2, help="Border strip width in pixels (default 16).")
+    parser.add_argument("--strip", type=int, default=1, help="Border strip width in pixels (default 16).")
     parser.add_argument("--topk", type=int, default=12, help="Top-k candidates per slot for backtracking (pruning).")
     parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds). Increase for harder puzzles.)")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
