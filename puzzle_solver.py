@@ -46,6 +46,8 @@ def cut_into_grid(img: np.ndarray, grid_n: int) -> Tuple[List[np.ndarray], List[
 
 # ----------------------------
 # 2) Extract borders with LAB + gradient
+# L --> Luminance or Lightness
+# AB --> Chrominance (A, red green) (B, yellow blue)
 # ----------------------------
 def extract_borders(piece: np.ndarray, strip_width: int = 1) -> Dict[int, np.ndarray]:
     lab = cv2.cvtColor(piece, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -121,7 +123,6 @@ def border_distance_2d(stripA, stripB, sideA, sideB, p=0.3, q=1/16,
     return float(d1)
 
 
-
 # ----------------------------
 # 4) Precompute compatibility
 # ----------------------------
@@ -191,7 +192,7 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
         return best_for_a == b and best_for_b == a
 
     # --- Step 1: place seed(s) ---
-    if seed_placement:
+    if seed_placement: # wtf
         seed_pos = list(seed_placement.keys())
         rs = [p // grid_n for p in seed_pos]
         cs = [p % grid_n for p in seed_pos]
@@ -216,13 +217,27 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
                 used[pid] = True
     else:
         # single random seed at center
-        center_r, center_c = grid_n // 2, grid_n // 2
-        center_pos = center_r * grid_n + center_c
-        seed_pid = np.random.randint(0, n)
+        # 4x4
+        # 4 // 2, 4 // 2
+        # 2, 2
+        # 2 * 4 + 2 = 8 + 2 = 10
+        # seed_pid = random number between 0 and 10
+        # placement[10]
+
+        center_r, center_c = grid_n // 2, grid_n // 2 
+        center_pos = center_r * grid_n + center_c # flattening
+        seed_pid = np.random.randint(0, n) # 0 --> 15
         placement[center_pos] = seed_pid
         used[seed_pid] = True
 
     # --- Step 2: greedy filling ---
+    # 4x4, grid_n = 4
+    # pos 3
+    # 3 // 4 = 0
+    # 3 mod 4 = 3
+    # row 0, col 3
+    # [0, 1, 2, 3, 4, ]
+
     def get_neighbors(pos):
         r, c = pos // grid_n, pos % grid_n
         neighbors = []
@@ -236,29 +251,31 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
             neighbors.append((pos + 1, 3))      # right neighbor: its left side=3
         return neighbors
 
-    slots_filled = sum(1 for x in placement if x != -1)
+    slots_filled = sum(1 for x in placement if x != -1) # number of placed pieces
+    # slots_filled = 1
     while slots_filled < n:
         # collect empty slots with at least one neighbor
         empty_slots = []
-        for pos in range(n):
-            if placement[pos] != -1:
+        for pos in range(n): # range(16) --> 0 l7d 15
+            if placement[pos] != -1: # this for loop operates only on empty slots
                 continue
-            neighs = get_neighbors(pos)
-            if neighs:
+            neighs = get_neighbors(pos) # get neighbours for empty slot
+            if neighs: # if neighbours exist
                 empty_slots.append(( -len(neighs), pos, neighs))  # more neighbors first
-        if not empty_slots:
+        if not empty_slots: # wtf
             # fallback: pick first empty
             pos = placement.index(-1)
             empty_slots = [(0, pos, [])]
 
-        empty_slots.sort()
+        empty_slots.sort() # ascending, negative first, highest number of neighbours first
         chosen = None
 
         # Try mutual best-buddy first
+        # -length, empty slot position, neigbhours
         for _, slot_pos, neighs in empty_slots:
             candidates = []
-            for pid in range(n):
-                if used[pid]:
+            for pid in range(n): # 0 -> 15
+                if used[pid]: # is this piece placed?
                     continue
                 bb_count = 0
                 compat_sum = 0.0
@@ -310,7 +327,7 @@ def segmenter(placement, grid_n, compat):
     Given a full placement (position -> piece_id), return list of segments
     Each segment is a list of positions that are connected via best-buddy neighbor relation.
     """
-    n_slots = len(placement)
+    n_slots = len(placement) # grid_n * grid_n
     visited = [False] * n_slots
     segments = []
 
@@ -322,7 +339,7 @@ def segmenter(placement, grid_n, compat):
         if r > 0: yield pos-grid_n, 0
         if r < grid_n-1: yield pos+grid_n, 2
 
-    for pos in range(n_slots):
+    for pos in range(n_slots): # 0 --> 15
         if visited[pos]:
             continue
         # BFS/region grow using best-buddy predicate
@@ -416,8 +433,8 @@ def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True):
         if not improved:
             # optional local swap pass to improve BB-score
             if swap_pass:
-                for pos1 in range(n_slots):
-                    for pos2 in range(pos1+1, n_slots):
+                for pos1 in range(n_slots): # 0 -> 15
+                    for pos2 in range(pos1+1, n_slots): # 0+1 -> 15
                         new_placement = current.copy()
                         new_placement[pos1], new_placement[pos2] = new_placement[pos2], new_placement[pos1]
                         score_swap = compute_best_buddies_score(new_placement, grid_n, compat)
