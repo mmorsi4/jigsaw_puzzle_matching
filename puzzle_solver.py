@@ -118,8 +118,10 @@ def border_distance_2d(stripA, stripB, sideA, sideB, p=0.3, q=1/16,
 
     # compute distance and mirrored distance
     d1 = dist(a, b)
+
     # d2 = dist(a, mirror_for_side(b, sideB)) in case pieces rotated 180 degress or direction aren't direct 
     # d = min(d1, d2) 
+
     return float(d1)
 
 
@@ -192,7 +194,7 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
         return best_for_a == b and best_for_b == a
 
     # --- Step 1: place seed(s) ---
-    if seed_placement: # wtf
+    if seed_placement:
         seed_pos = list(seed_placement.keys())
         rs = [p // grid_n for p in seed_pos]
         cs = [p % grid_n for p in seed_pos]
@@ -215,28 +217,16 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
                 pos_new = r_new * grid_n + c_new
                 placement[pos_new] = pid
                 used[pid] = True
-    else:
-        # single random seed at center
-        # 4x4
-        # 4 // 2, 4 // 2
-        # 2, 2
-        # 2 * 4 + 2 = 8 + 2 = 10
-        # seed_pid = random number between 0 and 10
-        # placement[10]
-
-        center_r, center_c = grid_n // 2, grid_n // 2 
-        center_pos = center_r * grid_n + center_c # flattening
+    else: # --> put a random piece in a random position
+        # center_r, center_c = grid_n // 2, grid_n // 2 
+        # center_pos = center_r * grid_n + center_c # flattening
         seed_pid = np.random.randint(0, n) # 0 --> 15
-        placement[center_pos] = seed_pid
+        seed_pos = np.random.choice(range(n))
+        placement[seed_pos] = seed_pid
+        # placement[center_pos] = seed_pid
         used[seed_pid] = True
 
     # --- Step 2: greedy filling ---
-    # 4x4, grid_n = 4
-    # pos 3
-    # 3 // 4 = 0
-    # 3 mod 4 = 3
-    # row 0, col 3
-    # [0, 1, 2, 3, 4, ]
 
     def get_neighbors(pos):
         r, c = pos // grid_n, pos % grid_n
@@ -262,7 +252,7 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
             neighs = get_neighbors(pos) # get neighbours for empty slot
             if neighs: # if neighbours exist
                 empty_slots.append(( -len(neighs), pos, neighs))  # more neighbors first
-        if not empty_slots: # wtf
+        if not empty_slots:
             # fallback: pick first empty
             pos = placement.index(-1)
             empty_slots = [(0, pos, [])]
@@ -602,7 +592,7 @@ def compute_error(img1, img2):
 # ----------------------------
 # Main CLI (updated for multiple images)
 # ----------------------------
-def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5):
+def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5, iterations=10):
     files = []
     false_images = []
     correct = 0
@@ -632,7 +622,7 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
             print(f"\n[*] Grid {g}x{g}")
             start = time.time()
             placement, recon, compat = solve_image(
-                img, g, strip_width=strip_width, top_k=top_k, time_limit=time_limit, visualize=visualize, seeds=seeds
+                img, g, strip_width=strip_width, top_k=top_k, time_limit=time_limit, visualize=visualize, seeds=seeds, shifter_iters=iterations
             )
             total+=1
             if correct_folder:
@@ -671,10 +661,11 @@ if __name__ == "__main__":
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
     parser.add_argument("--limit", type=int, default=None, help="Number of images from the folder to process (default: all).")
     parser.add_argument("--seeds", type=int, default=5, help="Number of random placer seeds to try (default 5).")
+    parser.add_argument("--iter", type=int, default=10, help="Number of shifter iterations to attempt (default 10).")
     args = parser.parse_args()
 
     grids = [int(x) for x in args.grids.split(",") if x.strip().isdigit()]
     main(args.folder, args.file, grids,
         strip_width=args.strip, top_k=args.topk,
         time_limit=args.timelimit, visualize=not args.no_vis,
-        limit=args.limit, correct_folder=args.correct_folder, seeds=args.seeds)
+        limit=args.limit, correct_folder=args.correct_folder, seeds=args.seeds, iterations=args.iter)
