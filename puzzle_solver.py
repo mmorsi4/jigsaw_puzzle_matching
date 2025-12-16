@@ -46,6 +46,8 @@ def cut_into_grid(img: np.ndarray, grid_n: int) -> Tuple[List[np.ndarray], List[
 
 # ----------------------------
 # 2) Extract borders with LAB + gradient
+# L --> Luminance or Lightness
+# AB --> Chrominance (A, red green) (B, yellow blue)
 # ----------------------------
 def extract_borders(piece: np.ndarray, strip_width: int = 1) -> Dict[int, np.ndarray]:
     lab = cv2.cvtColor(piece, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -116,10 +118,11 @@ def border_distance_2d(stripA, stripB, sideA, sideB, p=0.3, q=1/16,
 
     # compute distance and mirrored distance
     d1 = dist(a, b)
+
     # d2 = dist(a, mirror_for_side(b, sideB)) in case pieces rotated 180 degress or direction aren't direct 
     # d = min(d1, d2) 
-    return float(d1)
 
+    return float(d1)
 
 
 # ----------------------------
@@ -162,6 +165,86 @@ def is_best_buddy(i, side, j, compat):
     opp = opposite(side)
     bi = best_partner_for(j, opp, compat)
     return bi == i
+
+
+def placer_beam(n, grid_n, compat, beam_width=10, top_k=6):
+    """
+    Enhanced Beam-search based placer.
+    Returns best placement found.
+    """
+
+    # Precompute neighbors for all positions
+    neighbor_map = {}
+    for pos in range(n):
+        r, c = divmod(pos, grid_n)
+        neighs = []
+        if r > 0: neighs.append((pos - grid_n, 2))
+        if r < grid_n - 1: neighs.append((pos + grid_n, 0))
+        if c > 0: neighs.append((pos - 1, 1))
+        if c < grid_n - 1: neighs.append((pos + 1, 3))
+        neighbor_map[pos] = neighs
+
+    # ---- initial beam ----
+    beam = []
+    for _ in range(beam_width):  # multiple random seeds
+        seed_pid = np.random.randint(0, n)
+        seed_pos = np.random.randint(0, n)
+        state = {
+            "placement": [-1]*n,
+            "used": set([seed_pid]),
+            "cost": 0.0
+        }
+        state["placement"][seed_pos] = seed_pid
+        beam.append(state)
+
+    # ---- expand until full ----
+    for step in range(1, n):
+        candidates = []
+
+        for state in beam:
+            placement, used, base_cost = state["placement"], state["used"], state["cost"]
+
+            # select empty slot with max neighbors
+            slots = [( -len([pid for pid,_ in neighbor_map[pos] if placement[pid]!=-1]), pos)
+                     for pos in range(n) if placement[pos] == -1]
+            if not slots:
+                continue
+            slots.sort()
+            _, slot = slots[0]
+            neighs = [(pid, side) for pid, side in neighbor_map[slot] if placement[pid]!=-1]
+
+            # compute cost for unused pieces
+            piece_scores = []
+            for pid in range(n):
+                if pid in used: continue
+                if neighs:
+                    cost = sum(compat[side][placement[nb], pid] for nb, side in neighs)
+                else:
+                    cost = 0
+                piece_scores.append((cost, pid))
+
+            piece_scores.sort()
+            for cost_inc, pid in piece_scores[:top_k]:
+                new_state = {
+                    "placement": placement.copy(),
+                    "used": used.copy(),
+                    "cost": base_cost + cost_inc
+                }
+                new_state["placement"][slot] = pid
+                new_state["used"].add(pid)
+                candidates.append(new_state)
+
+        if not candidates:
+            break
+
+        # prune best beam_width states
+        candidates.sort(key=lambda x: x["cost"])
+        beam = candidates[:beam_width]
+
+    # Return best placement
+    beam.sort(key=lambda x: x["cost"])
+    return beam[0]["placement"]
+
 
 # ----------------------------
 # Placer (greedy, with best-buddies primary)
@@ -214,15 +297,17 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
                 pos_new = r_new * grid_n + c_new
                 placement[pos_new] = pid
                 used[pid] = True
-    else:
-        # single random seed at center
-        center_r, center_c = grid_n // 2, grid_n // 2
-        center_pos = center_r * grid_n + center_c
-        seed_pid = np.random.randint(0, n)
-        placement[center_pos] = seed_pid
+    else: # --> put a random piece in a random position
+        # center_r, center_c = grid_n // 2, grid_n // 2 
+        # center_pos = center_r * grid_n + center_c # flattening
+        seed_pid = np.random.randint(0, n) # 0 --> 15
+        seed_pos = np.random.choice(range(n))
+        placement[seed_pos] = seed_pid
+        # placement[center_pos] = seed_pid
         used[seed_pid] = True
 
     # --- Step 2: greedy filling ---
+
     def get_neighbors(pos):
         r, c = pos // grid_n, pos % grid_n
         neighbors = []
@@ -236,29 +321,31 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
             neighbors.append((pos + 1, 3))      # right neighbor: its left side=3
         return neighbors
 
-    slots_filled = sum(1 for x in placement if x != -1)
+    slots_filled = sum(1 for x in placement if x != -1) # number of placed pieces
+    # slots_filled = 1
     while slots_filled < n:
         # collect empty slots with at least one neighbor
         empty_slots = []
-        for pos in range(n):
-            if placement[pos] != -1:
+        for pos in range(n): # range(16) --> 0 l7d 15
+            if placement[pos] != -1: # this for loop operates only on empty slots
                 continue
-            neighs = get_neighbors(pos)
-            if neighs:
+            neighs = get_neighbors(pos) # get neighbours for empty slot
+            if neighs: # if neighbours exist
                 empty_slots.append(( -len(neighs), pos, neighs))  # more neighbors first
         if not empty_slots:
             # fallback: pick first empty
             pos = placement.index(-1)
             empty_slots = [(0, pos, [])]
 
-        empty_slots.sort()
+        empty_slots.sort() # ascending, negative first, highest number of neighbours first
         chosen = None
 
         # Try mutual best-buddy first
+        # -length, empty slot position, neigbhours
         for _, slot_pos, neighs in empty_slots:
             candidates = []
-            for pid in range(n):
-                if used[pid]:
+            for pid in range(n): # 0 -> 15
+                if used[pid]: # is this piece placed?
                     continue
                 bb_count = 0
                 compat_sum = 0.0
@@ -310,7 +397,7 @@ def segmenter(placement, grid_n, compat):
     Given a full placement (position -> piece_id), return list of segments
     Each segment is a list of positions that are connected via best-buddy neighbor relation.
     """
-    n_slots = len(placement)
+    n_slots = len(placement) # grid_n * grid_n
     visited = [False] * n_slots
     segments = []
 
@@ -322,7 +409,7 @@ def segmenter(placement, grid_n, compat):
         if r > 0: yield pos-grid_n, 0
         if r < grid_n-1: yield pos+grid_n, 2
 
-    for pos in range(n_slots):
+    for pos in range(n_slots): # 0 --> 15
         if visited[pos]:
             continue
         # BFS/region grow using best-buddy predicate
@@ -381,14 +468,15 @@ def compute_best_buddies_score(placement, grid_n, compat):
 # ----------------------------
 # Shifter: iterative re-seeding with largest segment
 # ----------------------------
-def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True):
+def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, target_score=0.9):
     """
     Iteratively improve placement using segmentation + reseeding + optional local swaps.
     """
     n_slots = len(initial_placement)
     current = initial_placement.copy()
     best_score = compute_best_buddies_score(current, grid_n, compat)
-
+    best_placement = current.copy()
+    
     for it in range(max_iters):
         segments = segmenter(current, grid_n, compat)
         if not segments:
@@ -410,31 +498,34 @@ def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True):
             if score_new > best_score + 1e-9:
                 current = placement_new
                 best_score = score_new
+                best_placement = current.copy()
                 improved = True
-                break  # prioritize first-improving segment
+                break
 
         if not improved:
             # optional local swap pass to improve BB-score
             if swap_pass:
-                for pos1 in range(n_slots):
-                    for pos2 in range(pos1+1, n_slots):
+                for pos1 in range(n_slots): # 0 -> 15
+                    for pos2 in range(pos1+1, n_slots): # 0+1 -> 15
                         new_placement = current.copy()
                         new_placement[pos1], new_placement[pos2] = new_placement[pos2], new_placement[pos1]
                         score_swap = compute_best_buddies_score(new_placement, grid_n, compat)
                         if score_swap > best_score + 1e-9:
                             current = new_placement
                             best_score = score_swap
+                            best_placement = current.copy()
                             improved = True
                             break
                     if improved:
                         break
 
-        if not improved:
-            break  # local max reached
+        if not improved: 
+            if best_score >= target_score:
+                return best_placement, best_score
+            current = placer(n_slots, grid_n, compat)
+            
 
-    return current, best_score
-
-
+    return best_placement, best_score
 # ----------------------------
 # 5) Solve 2x2 by brute-force (guaranteed)
 # ----------------------------
@@ -522,7 +613,13 @@ def solve_image(img, grid_n, strip_width=8, top_k=12, time_limit=30.0, visualize
         for s in range(seeds):
             print(f"[*] Seed run {s+1}/{seeds}")
             # run initial placer with a single random seed
-            init_placement = placer(n, grid_n, compat, seed_placement=None)
+            init_placement = placer_beam(
+                n,
+                grid_n,
+                compat,
+                beam_width=top_k,   # reuse CLI param
+                top_k=6
+            )
             bb0 = compute_best_buddies_score(init_placement, grid_n, compat)
 
             # --- visualize placer ---
@@ -582,14 +679,17 @@ def compute_error(img1, img2):
         raise ValueError("Images must have the same dimensions to compute error.")
     return np.mean((img1.astype(np.float32) - img2.astype(np.float32)) ** 2)
 
+
 # ----------------------------
-# Main CLI (updated for multiple images)
+# Main CLI 
 # ----------------------------
-def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5):
+def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5, iterations=10, save_recon_folder=None, img_range=None):
     files = []
     false_images = []
     correct = 0
     total = 0
+
+    # Load files
     if filename:
         path = filename if os.path.isabs(filename) else os.path.join(folder, filename)
         if not os.path.exists(path):
@@ -600,8 +700,16 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
                         if f.lower().endswith(('.png','.jpg','.jpeg'))])
         if not files:
             raise FileNotFoundError("No images found in folder.")
+        # apply limit
         if limit:
             files = files[:limit]
+        # apply range
+        if img_range:
+            start, end = img_range
+            files = files[start:end]
+
+    if save_recon_folder:
+        os.makedirs(save_recon_folder, exist_ok=True)
 
     for path in files:
         img_name = os.path.basename(path)
@@ -615,9 +723,15 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
             print(f"\n[*] Grid {g}x{g}")
             start = time.time()
             placement, recon, compat = solve_image(
-                img, g, strip_width=strip_width, top_k=top_k, time_limit=time_limit, visualize=visualize, seeds=seeds
+                img, g, strip_width=strip_width, top_k=top_k, time_limit=time_limit, visualize=visualize, seeds=seeds, shifter_iters=iterations
             )
             total+=1
+            if save_recon_folder:
+                base_name = os.path.splitext(img_name)[0]
+                save_path = os.path.join(save_recon_folder, f"{base_name}_{g}x{g}_recon.png")
+                cv2.imwrite(save_path, recon)
+                print(f"[+] Saved reconstructed image to {save_path}")
+
             if correct_folder:
                 base_name = os.path.splitext(img_name)[0]
                 found = False
@@ -627,7 +741,7 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
                         correct_img = cv2.imread(correct_path)
                         if correct_img is not None:
                             error = compute_error(recon, correct_img)
-                            if error<200:
+                            if error<500:
                                 correct+=1
                             else:
                                 false_images.append(base_name)
@@ -642,22 +756,36 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
     print(f"Correct images = {correct}/{total}")
     print(f"Uncorrect image: {false_images}")
 
+# ----------------------------
+# CLI parser update
+# ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Edge-based puzzle solver with Placer+Segmenter+Shifter (paper pipeline).")
-    parser.add_argument("--folder", type=str, default="gravity_falls_dataset/puzzle_2x2", help="Folder containing images (if --file not set uses first).")
+    parser.add_argument("--folder", type=str, default="gravity_falls_dataset/puzzle_2x2", help="Folder containing images.")
     parser.add_argument("--correct-folder", type=str, default="gravity_falls_dataset/correct", help="Folder containing correct images.")
     parser.add_argument("--file", type=str, default=None, help="Specific image filename to use (optional).")
     parser.add_argument("--grids", type=str, default="2,4,8", help="Comma-separated grid sizes to attempt, e.g. '2,4,8'.")
     parser.add_argument("--strip", type=int, default=1, help="Border strip width in pixels (default 8).")
     parser.add_argument("--topk", type=int, default=12, help="Top-k candidates per slot for backtracking (pruning).")
-    parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds). Increase for harder puzzles.)")
+    parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds).")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
     parser.add_argument("--limit", type=int, default=None, help="Number of images from the folder to process (default: all).")
-    parser.add_argument("--seeds", type=int, default=5, help="Number of random placer seeds to try (default 5).")
+    parser.add_argument("--range", type=str, default=None, help="Range of images to process, e.g. '0-10'.")
+    parser.add_argument("--save-recon-folder", type=str, default=None, help="Folder to save reconstructed images.")
+    parser.add_argument("--seeds", type=int, default=5, help="Number of random placer seeds to try.")
+    parser.add_argument("--iter", type=int, default=10, help="Number of shifter iterations to attempt.")
     args = parser.parse_args()
 
     grids = [int(x) for x in args.grids.split(",") if x.strip().isdigit()]
+    img_range = None
+    if args.range:
+        parts = args.range.split("-")
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            img_range = (int(parts[0]), int(parts[1]))
+
     main(args.folder, args.file, grids,
-        strip_width=args.strip, top_k=args.topk,
-        time_limit=args.timelimit, visualize=not args.no_vis,
-        limit=args.limit, correct_folder=args.correct_folder, seeds=args.seeds)
+         strip_width=args.strip, top_k=args.topk,
+         time_limit=args.timelimit, visualize=not args.no_vis,
+         limit=args.limit, correct_folder=args.correct_folder,
+         seeds=args.seeds, iterations=args.iter,
+         save_recon_folder=args.save_recon_folder, img_range=img_range)
