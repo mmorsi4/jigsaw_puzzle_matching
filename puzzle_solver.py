@@ -683,7 +683,7 @@ def compute_error(img1, img2):
 # ----------------------------
 # Main CLI 
 # ----------------------------
-def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5):
+def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, limit=None, correct_folder=None, seeds=5, iterations=10, save_recon_folder=None, img_range=None):
     files = []
     false_images = []
     correct = 0
@@ -770,7 +770,10 @@ if __name__ == "__main__":
     parser.add_argument("--timelimit", type=float, default=30.0, help="Time limit per grid solve (seconds).")
     parser.add_argument("--no-vis", action="store_true", help="Disable visualization.")
     parser.add_argument("--limit", type=int, default=None, help="Number of images from the folder to process (default: all).")
-    parser.add_argument("--seeds", type=int, default=5, help="Number of random placer seeds to try (default 5).")
+    parser.add_argument("--range", type=str, default=None, help="Range of images to process, e.g. '0-10'.")
+    parser.add_argument("--save-recon-folder", type=str, default=None, help="Folder to save reconstructed images.")
+    parser.add_argument("--seeds", type=int, default=5, help="Number of random placer seeds to try.")
+    parser.add_argument("--iter", type=int, default=10, help="Number of shifter iterations to attempt.")
     args = parser.parse_args()
 
     grids = [int(x) for x in args.grids.split(",") if x.strip().isdigit()]
@@ -781,6 +784,8 @@ if __name__ == "__main__":
             img_range = (int(parts[0]), int(parts[1]))
 
     main(args.folder, args.file, grids,
-        strip_width=args.strip, top_k=args.topk,
-        time_limit=args.timelimit, visualize=not args.no_vis,
-        limit=args.limit, correct_folder=args.correct_folder, seeds=args.seeds)
+         strip_width=args.strip, top_k=args.topk,
+         time_limit=args.timelimit, visualize=not args.no_vis,
+         limit=args.limit, correct_folder=args.correct_folder,
+         seeds=args.seeds, iterations=args.iter,
+         save_recon_folder=args.save_recon_folder, img_range=img_range)
