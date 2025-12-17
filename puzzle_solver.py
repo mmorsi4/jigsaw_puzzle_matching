@@ -167,13 +167,27 @@ def is_best_buddy(i, side, j, compat):
     return bi == i
 
 
-def placer_beam(n, grid_n, compat, beam_width=10, top_k=6):
+def placer_beam(
+    n,
+    grid_n,
+    compat,
+    beam_width=10,
+    top_k=6,
+    used_seeds=None,
+    max_seed_trials=100
+):
     """
-    Enhanced Beam-search based placer.
-    Returns best placement found.
+    Enhanced Beam-search based placer with global seed tracking.
+
+    used_seeds : set of (seed_pid, seed_pos) used across runs
     """
 
-    # Precompute neighbors for all positions
+    if used_seeds is None:
+        used_seeds = set()
+
+    # ----------------------------
+    # Precompute neighbors
+    # ----------------------------
     neighbor_map = {}
     for pos in range(n):
         r, c = divmod(pos, grid_n)
@@ -184,51 +198,86 @@ def placer_beam(n, grid_n, compat, beam_width=10, top_k=6):
         if c < grid_n - 1: neighs.append((pos + 1, 3))
         neighbor_map[pos] = neighs
 
-    # ---- initial beam ----
+    # ----------------------------
+    # Initial beam (unique seeds)
+    # ----------------------------
     beam = []
-    for _ in range(beam_width):  # multiple random seeds
+    trials = 0
+
+    while len(beam) < beam_width and trials < max_seed_trials:
+        trials += 1
         seed_pid = np.random.randint(0, n)
         seed_pos = np.random.randint(0, n)
+        key = (seed_pid, seed_pos)
+
+        if key in used_seeds:
+            continue
+
+        used_seeds.add(key)
+
         state = {
-            "placement": [-1]*n,
-            "used": set([seed_pid]),
+            "placement": [-1] * n,
+            "used": {seed_pid},
             "cost": 0.0
         }
         state["placement"][seed_pos] = seed_pid
         beam.append(state)
 
-    # ---- expand until full ----
-    for step in range(1, n):
+    # fallback: allow reuse if exhausted
+    if not beam:
+        seed_pid = np.random.randint(0, n)
+        seed_pos = np.random.randint(0, n)
+        state = {
+            "placement": [-1] * n,
+            "used": {seed_pid},
+            "cost": 0.0
+        }
+        state["placement"][seed_pos] = seed_pid
+        beam.append(state)
+
+    # ----------------------------
+    # Beam expansion
+    # ----------------------------
+    for _ in range(1, n):
         candidates = []
 
         for state in beam:
-            placement, used, base_cost = state["placement"], state["used"], state["cost"]
+            placement = state["placement"]
+            used = state["used"]
+            base_cost = state["cost"]
 
-            # select empty slot with max neighbors
-            slots = [( -len([pid for pid,_ in neighbor_map[pos] if placement[pid]!=-1]), pos)
-                     for pos in range(n) if placement[pos] == -1]
+            # choose empty slot with max filled neighbors
+            slots = []
+            for pos in range(n):
+                if placement[pos] != -1:
+                    continue
+                filled = [(p, s) for p, s in neighbor_map[pos] if placement[p] != -1]
+                if filled:
+                    slots.append((-len(filled), pos, filled))
+
             if not slots:
                 continue
+
             slots.sort()
-            _, slot = slots[0]
-            neighs = [(pid, side) for pid, side in neighbor_map[slot] if placement[pid]!=-1]
+            _, slot, neighs = slots[0]
 
-            # compute cost for unused pieces
-            piece_scores = []
+            # score unused pieces
+            scores = []
             for pid in range(n):
-                if pid in used: continue
-                if neighs:
-                    cost = sum(compat[side][placement[nb], pid] for nb, side in neighs)
-                else:
-                    cost = 0
-                piece_scores.append((cost, pid))
+                if pid in used:
+                    continue
+                cost = sum(
+                    compat[side][placement[nb], pid]
+                    for nb, side in neighs
+                )
+                scores.append((cost, pid))
 
-            piece_scores.sort()
-            for cost_inc, pid in piece_scores[:top_k]:
+            scores.sort()
+            for inc_cost, pid in scores[:top_k]:
                 new_state = {
                     "placement": placement.copy(),
                     "used": used.copy(),
-                    "cost": base_cost + cost_inc
+                    "cost": base_cost + inc_cost
                 }
                 new_state["placement"][slot] = pid
                 new_state["used"].add(pid)
@@ -237,49 +286,55 @@ def placer_beam(n, grid_n, compat, beam_width=10, top_k=6):
         if not candidates:
             break
 
-        # prune best beam_width states
         candidates.sort(key=lambda x: x["cost"])
         beam = candidates[:beam_width]
 
-    # Return best placement
     beam.sort(key=lambda x: x["cost"])
     return beam[0]["placement"]
+
 
 
 # ----------------------------
 # Placer (greedy, with best-buddies primary)
 # ----------------------------
-def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
+def placer(
+    n,
+    grid_n,
+    compat,
+    seed_placement=None,
+    seed_center=True,
+    used_seeds=None,          # NEW
+    max_seed_tries=100        # safety
+):
     """
-    Greedy placer reconstructs puzzle around a seed.
-    - n: number of pieces
-    - grid_n: puzzle width/height
-    - compat: dict of 4 sides -> np.array(n,n) distances (lower = better)
-    - seed_placement: dict pos_index -> piece_id (optional)
-    Returns: placement list length n mapping position -> piece_id
-    Positions are 0..n-1 in row-major order.
+    Greedy placer with seed tracking.
+    - used_seeds: set of (seed_pid, seed_pos) already tried
     """
+
+    if used_seeds is None:
+        used_seeds = set()
+
     placement = [-1] * n
     used = [False] * n
 
-    # Helper: opposite side
     def opposite(side):
         return (side + 2) % 4
 
-    # Helper: check if two pieces are mutual best buddies
     def mutual_best_buddy(a, side_a, b):
-        """Return True if a and b are mutual best buddies on given side."""
         best_for_a = np.argmin(compat[side_a][a])
         best_for_b = np.argmin(compat[opposite(side_a)][b])
         return best_for_a == b and best_for_b == a
 
-    # --- Step 1: place seed(s) ---
+    # -------------------------------------------------
+    # STEP 1: place seed(s)
+    # -------------------------------------------------
     if seed_placement:
         seed_pos = list(seed_placement.keys())
         rs = [p // grid_n for p in seed_pos]
         cs = [p % grid_n for p in seed_pos]
         rmin, rmax = min(rs), max(rs)
         cmin, cmax = min(cs), max(cs)
+
         seed_h = rmax - rmin + 1
         seed_w = cmax - cmin + 1
 
@@ -297,55 +352,70 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
                 pos_new = r_new * grid_n + c_new
                 placement[pos_new] = pid
                 used[pid] = True
-    else: # --> put a random piece in a random position
-        # center_r, center_c = grid_n // 2, grid_n // 2 
-        # center_pos = center_r * grid_n + center_c # flattening
-        seed_pid = np.random.randint(0, n) # 0 --> 15
-        seed_pos = np.random.choice(range(n))
-        placement[seed_pos] = seed_pid
-        # placement[center_pos] = seed_pid
-        used[seed_pid] = True
 
-    # --- Step 2: greedy filling ---
+    else:
+        # ---------- RANDOM SEED WITH TRACKING ----------
+        for _ in range(max_seed_tries):
+            seed_pid = np.random.randint(0, n)
+            seed_pos = np.random.randint(0, n)
 
+            if (seed_pid, seed_pos) not in used_seeds:
+                used_seeds.add((seed_pid, seed_pos))
+                placement[seed_pos] = seed_pid
+                used[seed_pid] = True
+                break
+        else:
+            # fallback: deterministic unused combo
+            for pid in range(n):
+                for pos in range(n):
+                    if (pid, pos) not in used_seeds:
+                        used_seeds.add((pid, pos))
+                        placement[pos] = pid
+                        used[pid] = True
+                        break
+                else:
+                    continue
+                break
+
+    # -------------------------------------------------
+    # STEP 2: greedy filling (UNCHANGED LOGIC)
+    # -------------------------------------------------
     def get_neighbors(pos):
         r, c = pos // grid_n, pos % grid_n
         neighbors = []
         if r > 0 and placement[pos - grid_n] != -1:
-            neighbors.append((pos - grid_n, 2))  # top neighbor: its bottom side=2
+            neighbors.append((pos - grid_n, 2))
         if r < grid_n - 1 and placement[pos + grid_n] != -1:
-            neighbors.append((pos + grid_n, 0))  # bottom neighbor: its top side=0
+            neighbors.append((pos + grid_n, 0))
         if c > 0 and placement[pos - 1] != -1:
-            neighbors.append((pos - 1, 1))      # left neighbor: its right side=1
+            neighbors.append((pos - 1, 1))
         if c < grid_n - 1 and placement[pos + 1] != -1:
-            neighbors.append((pos + 1, 3))      # right neighbor: its left side=3
+            neighbors.append((pos + 1, 3))
         return neighbors
 
-    slots_filled = sum(1 for x in placement if x != -1) # number of placed pieces
-    # slots_filled = 1
+    slots_filled = sum(p != -1 for p in placement)
+
     while slots_filled < n:
-        # collect empty slots with at least one neighbor
         empty_slots = []
-        for pos in range(n): # range(16) --> 0 l7d 15
-            if placement[pos] != -1: # this for loop operates only on empty slots
+        for pos in range(n):
+            if placement[pos] != -1:
                 continue
-            neighs = get_neighbors(pos) # get neighbours for empty slot
-            if neighs: # if neighbours exist
-                empty_slots.append(( -len(neighs), pos, neighs))  # more neighbors first
+            neighs = get_neighbors(pos)
+            if neighs:
+                empty_slots.append((-len(neighs), pos, neighs))
+
         if not empty_slots:
-            # fallback: pick first empty
             pos = placement.index(-1)
             empty_slots = [(0, pos, [])]
 
-        empty_slots.sort() # ascending, negative first, highest number of neighbours first
+        empty_slots.sort()
         chosen = None
 
-        # Try mutual best-buddy first
-        # -length, empty slot position, neigbhours
+        # ---- mutual best buddies ----
         for _, slot_pos, neighs in empty_slots:
             candidates = []
-            for pid in range(n): # 0 -> 15
-                if used[pid]: # is this piece placed?
+            for pid in range(n):
+                if used[pid]:
                     continue
                 bb_count = 0
                 compat_sum = 0.0
@@ -357,12 +427,11 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
                 if bb_count > 0:
                     candidates.append((bb_count, compat_sum, slot_pos, pid))
             if candidates:
-                # pick highest bb_count, then lowest compat sum
                 candidates.sort(key=lambda x: (-x[0], x[1]))
                 chosen = candidates[0]
                 break
 
-        # fallback: pick slot with best average compatibility
+        # ---- fallback ----
         if chosen is None:
             _, slot_pos, neighs = empty_slots[0]
             best_val = 1e18
@@ -370,23 +439,23 @@ def placer(n, grid_n, compat, seed_placement=None, seed_center=True):
             for pid in range(n):
                 if used[pid]:
                     continue
-                ssum = 0.0
-                for neigh_pos, neigh_side in neighs:
-                    neigh_pid = placement[neigh_pos]
-                    ssum += compat[neigh_side][neigh_pid, pid]
+                ssum = sum(
+                    compat[side][placement[nb], pid]
+                    for nb, side in neighs
+                )
                 avg = ssum / max(1, len(neighs))
                 if avg < best_val:
                     best_val = avg
                     best_pid = pid
             chosen = (0, best_val, slot_pos, best_pid)
 
-        # place chosen
         _, _, slot_pos, chosen_pid = chosen
         placement[slot_pos] = chosen_pid
         used[chosen_pid] = True
         slots_filled += 1
 
     return placement
+
 
 
 # ----------------------------
@@ -468,7 +537,7 @@ def compute_best_buddies_score(placement, grid_n, compat):
 # ----------------------------
 # Shifter: iterative re-seeding with largest segment
 # ----------------------------
-def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, target_score=0.9):
+def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, target_score=0.5):
     """
     Iteratively improve placement using segmentation + reseeding + optional local swaps.
     """
@@ -476,6 +545,7 @@ def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, tar
     current = initial_placement.copy()
     best_score = compute_best_buddies_score(current, grid_n, compat)
     best_placement = current.copy()
+    used_seeds = set()
     
     for it in range(max_iters):
         segments = segmenter(current, grid_n, compat)
@@ -500,7 +570,7 @@ def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, tar
                 best_score = score_new
                 best_placement = current.copy()
                 improved = True
-                break
+                
 
         if not improved:
             # optional local swap pass to improve BB-score
@@ -522,7 +592,7 @@ def shifter(initial_placement, grid_n, compat, max_iters=10, swap_pass=True, tar
         if not improved: 
             if best_score >= target_score:
                 return best_placement, best_score
-            current = placer(n_slots, grid_n, compat)
+            current = placer(n_slots, grid_n, compat, used_seeds=used_seeds)
             
 
     return best_placement, best_score
@@ -610,6 +680,8 @@ def solve_image(img, grid_n, strip_width=8, top_k=12, time_limit=30.0, visualize
         # Run multiple random seeds, keep best result by BB-score as paper does
         best_placement = None
         best_bb_score = -1.0
+        used_seeds = set()
+
         for s in range(seeds):
             print(f"[*] Seed run {s+1}/{seeds}")
             # run initial placer with a single random seed
@@ -618,7 +690,8 @@ def solve_image(img, grid_n, strip_width=8, top_k=12, time_limit=30.0, visualize
                 grid_n,
                 compat,
                 beam_width=top_k,   # reuse CLI param
-                top_k=6
+                top_k=6,
+                used_seeds=used_seeds
             )
             bb0 = compute_best_buddies_score(init_placement, grid_n, compat)
 
@@ -741,7 +814,7 @@ def main(folder, filename, grids, strip_width, top_k, time_limit, visualize, lim
                         correct_img = cv2.imread(correct_path)
                         if correct_img is not None:
                             error = compute_error(recon, correct_img)
-                            if error<500:
+                            if error<400:
                                 correct+=1
                             else:
                                 false_images.append(base_name)
